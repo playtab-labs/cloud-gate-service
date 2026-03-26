@@ -1,0 +1,16 @@
+services:
+  cloud-gate-service:
+    container_name: cloud-gate-service
+    image: ${ECR_IMAGE}
+    ports:
+      - "8082:8082"
+      - "9094:9094"
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - playtap
+
+networks:
+  playtap:
+    external: true
