@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+option java_package = "com.playtab.cloudgateservice.grpc";
+option java_multiple_files = true;
+
+package cloudgate;
+
+service WristbandService {
+  rpc LinkWristband(LinkWristbandRequest) returns (LinkWristbandResponse);
+  rpc GetMyWristbands(GetMyWristbandsRequest) returns (GetMyWristbandsResponse);
+}
+
+message LinkWristbandRequest {
+  string rfid = 1;
+}
+
+message LinkWristbandResponse {
+  string rfid = 1;
+  string active_date = 2;
+  string linked_at = 3;
+}
+
+message GetMyWristbandsRequest {}
+
+message WristbandInfo {
+  string rfid = 1;
+  string active_date = 2;
+  string linked_at = 3;
+}
+
+message GetMyWristbandsResponse {
+  repeated WristbandInfo wristbands = 1;
+}

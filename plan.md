@@ -296,3 +296,205 @@ TagService.processTag()
 - **리더기 헬스체크**: MCU에서 주기적 heartbeat → Reader 상태 갱신, 비활성 리더기 알림
 - **모니터링**: Actuator + Prometheus + Grafana로 태깅 처리량, 지연시간 모니터링
 - **이벤트 소싱**: 향후 Kafka 도입 시 태깅 이벤트를 토픽으로 발행하여 다른 서비스에서 구독 가능
+
+---
+
+## 13. 팔찌(Wristband) 관리 기능
+
+### 13.1 기능 개요
+
+행사용 RFID 팔찌를 관리하는 기능. 크게 3가지로 구성된다.
+
+1. **팔찌 목록 벌크 등록** — CSV 파일로 전체 팔찌(RFID + 사용 가능 날짜) 일괄 등록
+2. **팔찌 소유 연결** — BFF(GraphQL)에서 gRPC로 호출하여 identity id ↔ 팔찌 RFID 연결
+3. **팔찌 조회** — 특정 identity id의 소유 팔찌 목록 반환 (gRPC)
+
+### 13.2 엔티티 설계
+
+#### Wristband (팔찌)
+
+| 컬럼           | 타입            | 설명                              |
+|--------------|---------------|---------------------------------|
+| id           | BIGINT (PK)   | 자동 증가                           |
+| rfid         | VARCHAR(14)   | RFID 시리얼 (NTAG 213, 7바이트 hex) UNIQUE |
+| active_date  | DATE          | 사용 가능 날짜 (예: 2026-04-10)        |
+| created_at   | TIMESTAMP     | 등록 시각                           |
+
+#### WristbandOwnership (팔찌 소유 기록)
+
+| 컬럼           | 타입            | 설명                                |
+|--------------|---------------|-----------------------------------|
+| id           | BIGINT (PK)   | 자동 증가                             |
+| identity_id  | UUID          | 소유자 identity ID                   |
+| wristband_id | BIGINT (FK)   | 팔찌 ID → wristband(id)             |
+| linked_at    | TIMESTAMP     | 연결 시각                             |
+
+**제약 조건:**
+- `wristband_id` UNIQUE — 하나의 팔찌는 한 명만 소유 가능
+- 인당 동일 날짜 팔찌 최대 1개
+- 인당 총 팔찌 최대 2개
+- 위 2가지 소유 제한은 애플리케이션 레벨에서 검증
+
+**인덱스:**
+- `idx_wristband_rfid` ON wristband(rfid)
+- `idx_wristband_active_date` ON wristband(active_date)
+- `idx_ownership_identity_id` ON wristband_ownership(identity_id)
+
+### 13.3 DB 마이그레이션
+
+`V2__wristband_schema.sql`:
+
+```sql
+CREATE TABLE wristband (
+    id          BIGSERIAL PRIMARY KEY,
+    rfid        VARCHAR(14) NOT NULL UNIQUE,
+    active_date DATE        NOT NULL,
+    created_at  TIMESTAMP   NOT NULL DEFAULT now()
+);
+
+CREATE TABLE wristband_ownership (
+    id           BIGSERIAL PRIMARY KEY,
+    identity_id  UUID      NOT NULL,
+    wristband_id BIGINT    NOT NULL UNIQUE REFERENCES wristband(id),
+    linked_at    TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_wristband_rfid ON wristband(rfid);
+CREATE INDEX idx_wristband_active_date ON wristband(active_date);
+CREATE INDEX idx_ownership_identity_id ON wristband_ownership(identity_id);
+```
+
+### 13.4 gRPC 서비스 설계
+
+새 proto 파일 `wristband.proto`:
+
+```protobuf
+syntax = "proto3";
+
+option java_package = "com.playtab.cloudgateservice.grpc";
+option java_multiple_files = true;
+
+package cloudgate;
+
+service WristbandService {
+  // 팔찌 RFID와 identity 연결 (BFF mutation → gRPC)
+  rpc LinkWristband(LinkWristbandRequest) returns (LinkWristbandResponse);
+
+  // identity의 소유 팔찌 목록 조회
+  rpc GetMyWristbands(GetMyWristbandsRequest) returns (GetMyWristbandsResponse);
+}
+
+message LinkWristbandRequest {
+  string rfid = 1;  // 팔찌 RFID 시리얼
+  // identity_id는 gRPC 메타데이터 x-identity-id로 전달
+}
+
+message LinkWristbandResponse {
+  string rfid = 1;
+  string active_date = 2;       // yyyy-MM-dd
+  string linked_at = 3;         // ISO 8601
+}
+
+message GetMyWristbandsRequest {
+  // identity_id는 gRPC 메타데이터 x-identity-id로 전달
+}
+
+message WristbandInfo {
+  string rfid = 1;
+  string active_date = 2;       // yyyy-MM-dd
+  string linked_at = 3;         // ISO 8601
+}
+
+message GetMyWristbandsResponse {
+  repeated WristbandInfo wristbands = 1;
+}
+```
+
+**gRPC 메타데이터 처리:**
+- `x-identity-id` 키로 UUID 수신
+- gRPC `ServerInterceptor`로 메타데이터에서 identity id를 추출하여 `Context`에 전파
+- 서비스 메서드에서 `Context`를 통해 identity id 접근
+
+### 13.5 팔찌 벌크 등록 (CSV)
+
+**REST API:**
+
+```
+POST /api/v1/wristbands/bulk
+Content-Type: multipart/form-data
+
+file: wristbands.csv
+```
+
+**CSV 형식:**
+
+```csv
+rfid,active_date
+04A1B2C3D4E5F6,2026-04-10
+04B2C3D4E5F6A7,2026-04-10
+04C3D4E5F6A7B8,2026-04-11
+```
+
+**처리 로직:**
+1. CSV 파싱 → (rfid, active_date) 리스트 생성
+2. RFID 형식 검증 (14자리 hex)
+3. `saveAll`로 벌크 저장
+4. 중복 RFID는 에러 반환
+
+### 13.6 팔찌 소유 연결 비즈니스 로직
+
+```
+BFF (GraphQL mutation) → gRPC LinkWristband
+    │
+    ▼
+WristbandGrpcService.linkWristband()
+    ├── 1. 메타데이터에서 identity_id (UUID) 추출
+    ├── 2. rfid로 Wristband 조회 → 없으면 NOT_FOUND
+    ├── 3. 해당 팔찌가 이미 소유되었는지 확인 → 이미 소유됨이면 ALREADY_CLAIMED
+    ├── 4. identity_id의 현재 소유 팔찌 수 확인 → 2개 이상이면 LIMIT_EXCEEDED
+    ├── 5. identity_id가 같은 active_date 팔찌를 이미 소유하는지 확인 → 있으면 DUPLICATE_DATE
+    ├── 6. WristbandOwnership 생성 & 저장
+    └── 7. LinkWristbandResponse 반환
+```
+
+**gRPC 에러 코드:**
+
+| 상황                    | gRPC Status       | 설명                    |
+|-----------------------|-------------------|-----------------------|
+| 팔찌 RFID 미존재           | NOT_FOUND         | 등록되지 않은 팔찌            |
+| 팔찌 이미 다른 사람 소유        | ALREADY_EXISTS    | 이미 연결된 팔찌             |
+| 인당 총 2개 초과            | FAILED_PRECONDITION | 최대 소유 수 초과            |
+| 인당 동일 날짜 팔찌 중복        | FAILED_PRECONDITION | 같은 날짜 팔찌 이미 보유        |
+| x-identity-id 누락      | UNAUTHENTICATED   | 메타데이터에 identity 없음    |
+
+### 13.7 패키지 구조 (추가분)
+
+```
+com.playtab.cloudgateservice
+├── domain/
+│   └── wristband/
+│       ├── Wristband.java                # 엔티티
+│       ├── WristbandRepository.java
+│       ├── WristbandOwnership.java       # 엔티티
+│       └── WristbandOwnershipRepository.java
+│
+├── api/
+│   └── WristbandController.java          # CSV 벌크 등록 REST API
+│
+├── grpc/
+│   ├── WristbandGrpcService.java         # gRPC 서비스 구현
+│   └── IdentityInterceptor.java          # x-identity-id 메타데이터 추출 인터셉터
+│
+└── service/
+    └── WristbandService.java             # 비즈니스 로직
+```
+
+### 13.8 구현 순서
+
+1. **DB 마이그레이션** — `V2__wristband_schema.sql` (wristband, wristband_ownership 테이블)
+2. **엔티티 & 레포지토리** — Wristband, WristbandOwnership + JPA Repository
+3. **CSV 벌크 등록 API** — `POST /api/v1/wristbands/bulk` + CSV 파싱
+4. **Proto 정의** — `wristband.proto` (LinkWristband, GetMyWristbands)
+5. **gRPC 인터셉터** — `IdentityInterceptor` (x-identity-id → Context 전파)
+6. **gRPC 서비스** — `WristbandGrpcService` (연결 + 조회)
+7. **비즈니스 로직** — `WristbandService` (소유 제한 검증 포함)
