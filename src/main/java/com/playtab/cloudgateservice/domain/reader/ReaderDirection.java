@@ -1,5 +1,5 @@
 package com.playtab.cloudgateservice.domain.reader;
 
 public enum ReaderDirection {
-    IN, OUT
+    IN, OUT, RE_IN
 }

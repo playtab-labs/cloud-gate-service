@@ -2,6 +2,7 @@ package com.playtab.cloudgateservice.api;
 
 import com.playtab.cloudgateservice.domain.wristband.Wristband;
 import com.playtab.cloudgateservice.domain.wristband.WristbandRepository;
+import com.playtab.cloudgateservice.service.WristbandCacheService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,9 +20,12 @@ import java.util.Map;
 public class WristbandController {
 
     private final WristbandRepository wristbandRepository;
+    private final WristbandCacheService wristbandCacheService;
 
-    public WristbandController(WristbandRepository wristbandRepository) {
+    public WristbandController(WristbandRepository wristbandRepository,
+                               WristbandCacheService wristbandCacheService) {
         this.wristbandRepository = wristbandRepository;
+        this.wristbandCacheService = wristbandCacheService;
     }
 
     @PostMapping("/bulk")
@@ -82,6 +86,10 @@ public class WristbandController {
         }
 
         wristbandRepository.saveAll(wristbands);
+
+        for (Wristband w : wristbands) {
+            wristbandCacheService.cacheWristband(w.getRfid(), w.getActiveDate());
+        }
 
         return ResponseEntity.ok(Map.of(
                 "message", wristbands.size() + " wristbands registered successfully",

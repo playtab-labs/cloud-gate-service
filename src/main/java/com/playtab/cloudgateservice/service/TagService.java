@@ -1,7 +1,6 @@
 package com.playtab.cloudgateservice.service;
 
 import com.playtab.cloudgateservice.domain.reader.Reader;
-import com.playtab.cloudgateservice.domain.reader.ReaderDirection;
 import com.playtab.cloudgateservice.domain.reader.ReaderRepository;
 import com.playtab.cloudgateservice.domain.reader.ReaderStatus;
 import com.playtab.cloudgateservice.domain.tag.TagEvent;
@@ -14,6 +13,7 @@ import com.playtab.cloudgateservice.websocket.OccupancyBroadcaster;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Service
@@ -23,38 +23,40 @@ public class TagService {
     private final ReaderRepository readerRepository;
     private final OccupancyService occupancyService;
     private final OccupancyBroadcaster occupancyBroadcaster;
+    private final WristbandCacheService wristbandCacheService;
+    private final ChipStateService chipStateService;
 
     public TagService(TagEventRepository tagEventRepository,
                       ReaderRepository readerRepository,
                       OccupancyService occupancyService,
-                      OccupancyBroadcaster occupancyBroadcaster) {
+                      OccupancyBroadcaster occupancyBroadcaster,
+                      WristbandCacheService wristbandCacheService,
+                      ChipStateService chipStateService) {
         this.tagEventRepository = tagEventRepository;
         this.readerRepository = readerRepository;
         this.occupancyService = occupancyService;
         this.occupancyBroadcaster = occupancyBroadcaster;
+        this.wristbandCacheService = wristbandCacheService;
+        this.chipStateService = chipStateService;
     }
 
     @Transactional
     public TagResponse processTag(TagRequest request) {
-        Reader reader = readerRepository.findBySerialNumber(request.readerSerial())
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "등록되지 않은 리더기입니다: " + request.readerSerial()));
-
-        if (reader.getStatus() == ReaderStatus.INACTIVE) {
-            throw new IllegalStateException(
-                    "비활성 상태의 리더기입니다: " + request.readerSerial());
-        }
-
-        TagEventType eventType = reader.getDirection() == ReaderDirection.IN
-                ? TagEventType.ENTER
-                : TagEventType.EXIT;
-
+        Reader reader = findActiveReader(request.readerSerial());
         String chipSerial = request.chipSerial().toUpperCase();
+        Long stageId = reader.getStage().getId();
+
+        TagEventType eventType = switch (reader.getDirection()) {
+            case IN    -> processEntry(chipSerial, stageId);
+            case OUT   -> processExit();
+            case RE_IN -> processReentry(chipSerial, stageId);
+        };
 
         TagEvent tagEvent = new TagEvent(chipSerial, reader, eventType);
         tagEventRepository.save(tagEvent);
 
-        Long stageId = reader.getStage().getId();
+        chipStateService.setLastEventType(stageId, chipSerial, eventType);
+
         long newCount = occupancyService.update(stageId, eventType);
 
         occupancyBroadcaster.broadcast(new OccupancyResponse(
@@ -73,5 +75,57 @@ public class TagService {
                 reader.getStage().getName(),
                 tagEvent.getTaggedAt()
         );
+    }
+
+    private Reader findActiveReader(String readerSerial) {
+        Reader reader = readerRepository.findBySerialNumber(readerSerial)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Reader not found: " + readerSerial));
+
+        if (reader.getStatus() == ReaderStatus.INACTIVE) {
+            throw new IllegalStateException(
+                    "Reader is inactive: " + readerSerial);
+        }
+
+        return reader;
+    }
+
+    private void validateWristband(String chipSerial) {
+        String activeDate = wristbandCacheService.getLinkedActiveDate(chipSerial)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Wristband not personalized: " + chipSerial));
+        if (!activeDate.equals(LocalDate.now().toString())) {
+            throw new IllegalStateException("Wristband not valid for today: " + chipSerial);
+        }
+    }
+
+    private TagEventType processEntry(String chipSerial, Long stageId) {
+        validateWristband(chipSerial);
+
+        String lastType = chipStateService.getLastEventType(stageId, chipSerial);
+        if (lastType != null) {
+            if (lastType.equals("ENTER") || lastType.equals("REENTER")) {
+                throw new IllegalStateException("Already entered: " + chipSerial);
+            }
+        }
+        return TagEventType.ENTER;
+    }
+
+    private TagEventType processExit() {
+        return TagEventType.EXIT;
+    }
+
+    private TagEventType processReentry(String chipSerial, Long stageId) {
+        validateWristband(chipSerial);
+
+        String lastType = chipStateService.getLastEventType(stageId, chipSerial);
+        if (lastType == null) {
+            throw new IllegalStateException(
+                    "No entry/exit record found for today: " + chipSerial);
+        }
+        if (lastType.equals("ENTER") || lastType.equals("REENTER")) {
+            throw new IllegalStateException("Already entered: " + chipSerial);
+        }
+        return TagEventType.REENTER;
     }
 }
