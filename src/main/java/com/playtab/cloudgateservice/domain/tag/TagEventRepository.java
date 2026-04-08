@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 
 public interface TagEventRepository extends JpaRepository<TagEvent, Long> {
 
@@ -26,7 +27,8 @@ public interface TagEventRepository extends JpaRepository<TagEvent, Long> {
         SELECT COUNT(DISTINCT t.chipSerial)
         FROM TagEvent t
         WHERE t.reader.stage.id = :stageId
-        AND t.eventType = com.playtab.cloudgateservice.domain.tag.TagEventType.ENTER
+        AND (t.eventType = com.playtab.cloudgateservice.domain.tag.TagEventType.ENTER
+             OR t.eventType = com.playtab.cloudgateservice.domain.tag.TagEventType.REENTER)
         AND t.chipSerial NOT IN (
             SELECT t2.chipSerial FROM TagEvent t2
             WHERE t2.reader.stage.id = :stageId
@@ -35,4 +37,17 @@ public interface TagEventRepository extends JpaRepository<TagEvent, Long> {
         )
         """)
     long countCurrentOccupancy(@Param("stageId") Long stageId);
+
+    @Query("""
+        SELECT t FROM TagEvent t
+        WHERE t.chipSerial = :chipSerial
+        AND t.reader.stage.id = :stageId
+        AND t.taggedAt >= :startOfDay
+        ORDER BY t.taggedAt DESC
+        LIMIT 1
+        """)
+    Optional<TagEvent> findLastEventToday(
+            @Param("chipSerial") String chipSerial,
+            @Param("stageId") Long stageId,
+            @Param("startOfDay") LocalDateTime startOfDay);
 }

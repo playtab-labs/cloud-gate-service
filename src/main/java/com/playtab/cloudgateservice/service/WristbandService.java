@@ -14,11 +14,14 @@ public class WristbandService {
 
     private final WristbandRepository wristbandRepository;
     private final WristbandOwnershipRepository ownershipRepository;
+    private final WristbandCacheService wristbandCacheService;
 
     public WristbandService(WristbandRepository wristbandRepository,
-                            WristbandOwnershipRepository ownershipRepository) {
+                            WristbandOwnershipRepository ownershipRepository,
+                            WristbandCacheService wristbandCacheService) {
         this.wristbandRepository = wristbandRepository;
         this.ownershipRepository = ownershipRepository;
+        this.wristbandCacheService = wristbandCacheService;
     }
 
     @Transactional
@@ -41,7 +44,11 @@ public class WristbandService {
         }
 
         WristbandOwnership ownership = new WristbandOwnership(identityId, wristband);
-        return ownershipRepository.save(ownership);
+        WristbandOwnership saved = ownershipRepository.save(ownership);
+
+        wristbandCacheService.cacheLinked(wristband.getRfid(), wristband.getActiveDate());
+
+        return saved;
     }
 
     @Transactional(readOnly = true)

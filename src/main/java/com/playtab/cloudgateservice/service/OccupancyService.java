@@ -1,5 +1,6 @@
 package com.playtab.cloudgateservice.service;
 
+import com.playtab.cloudgateservice.domain.tag.TagEventRepository;
 import com.playtab.cloudgateservice.domain.tag.TagEventType;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -11,15 +12,18 @@ public class OccupancyService {
     private static final String KEY_SUFFIX = ":count";
 
     private final StringRedisTemplate redisTemplate;
+    private final TagEventRepository tagEventRepository;
 
-    public OccupancyService(StringRedisTemplate redisTemplate) {
+    public OccupancyService(StringRedisTemplate redisTemplate,
+                            TagEventRepository tagEventRepository) {
         this.redisTemplate = redisTemplate;
+        this.tagEventRepository = tagEventRepository;
     }
 
     public long update(Long stageId, TagEventType eventType) {
         String key = buildKey(stageId);
 
-        if (eventType == TagEventType.ENTER) {
+        if (eventType == TagEventType.ENTER || eventType == TagEventType.REENTER) {
             Long count = redisTemplate.opsForValue().increment(key);
             return count != null ? count : 0;
         } else {
@@ -33,8 +37,15 @@ public class OccupancyService {
     }
 
     public long getCount(Long stageId) {
-        String value = redisTemplate.opsForValue().get(buildKey(stageId));
-        return value != null ? Long.parseLong(value) : 0;
+        String key = buildKey(stageId);
+        String value = redisTemplate.opsForValue().get(key);
+        if (value != null) {
+            return Long.parseLong(value);
+        }
+
+        long count = tagEventRepository.countCurrentOccupancy(stageId);
+        redisTemplate.opsForValue().set(key, String.valueOf(count));
+        return count;
     }
 
     public void setCount(Long stageId, long count) {
