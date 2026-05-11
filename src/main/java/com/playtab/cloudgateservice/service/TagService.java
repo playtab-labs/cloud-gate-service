@@ -15,9 +15,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Service
 public class TagService {
+
+    private static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
 
     private final TagEventRepository tagEventRepository;
     private final ReaderRepository readerRepository;
@@ -94,7 +97,7 @@ public class TagService {
         String activeDate = wristbandCacheService.getActiveDate(chipSerial)
                 .orElseThrow(() -> new IllegalStateException(
                         "Wristband not registered: " + chipSerial));
-        if (!activeDate.equals(LocalDate.now().toString())) {
+        if (!activeDate.equals(LocalDate.now(ZONE).toString())) {
             throw new IllegalStateException("Wristband not valid for today: " + chipSerial);
         }
     }

@@ -15,6 +15,7 @@ public class ChipStateService {
 
     private static final String KEY_PREFIX = "cloudgate:stage:";
     private static final String KEY_INFIX = ":chip:";
+    private static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
 
     private final StringRedisTemplate redisTemplate;
     private final TagEventRepository tagEventRepository;
@@ -29,7 +30,7 @@ public class ChipStateService {
         String cached = redisTemplate.opsForValue().get(buildKey(stageId, chipSerial));
         if (cached != null) return cached;
 
-        LocalDateTime startOfDay = LocalDate.now().atStartOfDay();
+        LocalDateTime startOfDay = LocalDate.now(ZONE).atStartOfDay();
         return tagEventRepository.findLastEventToday(chipSerial, stageId, startOfDay)
                 .map(event -> {
                     setLastEventType(stageId, chipSerial, event.getEventType());
@@ -49,7 +50,6 @@ public class ChipStateService {
     }
 
     private Instant toMidnightInstant() {
-        return LocalDate.now().plusDays(1).atStartOfDay()
-                .atZone(ZoneId.systemDefault()).toInstant();
+        return LocalDate.now(ZONE).plusDays(1).atStartOfDay(ZONE).toInstant();
     }
 }
