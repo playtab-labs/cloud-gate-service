@@ -91,9 +91,9 @@ public class TagService {
     }
 
     private void validateWristband(String chipSerial) {
-        String activeDate = wristbandCacheService.getLinkedActiveDate(chipSerial)
+        String activeDate = wristbandCacheService.getActiveDate(chipSerial)
                 .orElseThrow(() -> new IllegalStateException(
-                        "Wristband not personalized: " + chipSerial));
+                        "Wristband not registered: " + chipSerial));
         if (!activeDate.equals(LocalDate.now().toString())) {
             throw new IllegalStateException("Wristband not valid for today: " + chipSerial);
         }
